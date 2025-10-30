@@ -1,0 +1,54 @@
+name: Scrape Latest Anime
+
+on:
+  # Menjalankan workflow setiap 6 jam
+  schedule:
+    - cron: '0 */6 * * *'
+  # Memungkinkan Anda menjalankan workflow secara manual dari tab Actions
+  workflow_dispatch:
+
+jobs:
+  scrape:
+    runs-on: ubuntu-latest
+
+    steps:
+      # Langkah 1: Checkout kode dari repositori Anda
+      - name: Checkout repository
+        uses: actions/checkout@v3
+
+      # Langkah 2: Setup Python
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.10' # Anda bisa menggunakan versi Python lain
+
+      # Langkah 3: Install dependencies dari requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Langkah 4: Jalankan skrip Python
+      - name: Run scraper
+        run: python scraper.py
+
+      # Langkah 5 (Opsional): Commit hasil scraping ke repositori
+      # Ini akan menyimpan file latest_anime.json ke repositori Anda setiap kali workflow berjalan
+      - name: Commit results
+        run: |
+          git config --local user.email "action@github.com"
+          git config --local user.name "GitHub Action"
+          git add latest_anime.json
+          # Cek apakah ada perubahan sebelum melakukan commit
+          if git diff-index --quiet HEAD; then
+            echo "No changes to commit."
+          else
+            git commit -m "Update latest anime data" -a
+          fi
+          
+      # Langkah 6 (Opsional): Push perubahan ke branch utama
+      - name: Push changes
+        uses: ad-m/github-push-action@master
+        with:
+          github_token: ${{ secrets.GITHUB_TOKEN }}
+          branch: main # Ganti dengan nama branch Anda jika berbeda
