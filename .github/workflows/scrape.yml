@@ -9,6 +9,11 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
 
+    # --- INILAH SOLUSINYA ---
+    # Tambahkan blok ini untuk memberikan izin menulis (push) ke repositori
+    permissions:
+      contents: write
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v3
@@ -23,7 +28,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
       
-      # Langkah BARU: Instal browser yang dibutuhkan oleh Playwright
       - name: Install Playwright Browsers
         run: playwright install --with-deps chromium
           
@@ -34,7 +38,6 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          # Hanya commit jika file json ada dan memiliki perubahan
           if [ -f "latest_anime.json" ]; then
             git add latest_anime.json
             if git diff-index --quiet HEAD; then
