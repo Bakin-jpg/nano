@@ -1,11 +1,12 @@
 from playwright.sync_api import sync_playwright
 from bs4 import BeautifulSoup
 import json
+import time
 
 def scrape_kickass_anime():
     """
     Fungsi untuk melakukan scraping data anime terbaru dari kickass-anime.ru
-    menggunakan Playwright untuk menangani konten dinamis (JavaScript).
+    menggunakan Playwright untuk menangani konten dinamis dan mensimulasikan scrolling.
     """
     url = "https://kickass-anime.ru/"
     scraped_data = []
@@ -14,31 +15,50 @@ def scrape_kickass_anime():
 
     with sync_playwright() as p:
         try:
-            # Meluncurkan browser Chromium secara headless (tanpa GUI)
             browser = p.chromium.launch(headless=True)
             page = browser.new_page()
 
             print(f"Mengambil data dari: {url}")
-            # Pergi ke URL dan tunggu hingga semua aktivitas jaringan selesai
-            page.goto(url, timeout=90000, wait_until="networkidle")
+            # Pergi ke URL, tunggu hingga struktur dasar halaman (DOM) siap
+            page.goto(url, timeout=90000, wait_until="domcontentloaded")
 
-            # Langkah paling penting: Tunggu hingga selector yang kita inginkan benar-benar muncul di halaman.
-            # Ini memastikan JavaScript telah selesai memuat konten.
-            print("Menunggu konten dinamis dimuat...")
-            page.wait_for_selector('div.latest-update', timeout=60000)
-            print("Kontainer 'latest-update' ditemukan.")
+            # Tunggu hingga setidaknya beberapa item anime pertama muncul
+            print("Menunggu konten awal dimuat...")
+            page.wait_for_selector('div.latest-update div.show-item', timeout=60000)
+            print("Konten awal ditemukan. Mulai proses scrolling...")
 
-            # Ambil konten HTML setelah JavaScript dieksekusi
+            # === LOGIKA SCROLLING BARU DIMULAI DI SINI ===
+            last_height = page.evaluate("document.body.scrollHeight")
+            
+            while True:
+                # Gulir ke bagian paling bawah halaman
+                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+                print("Scroll ke bawah...")
+                
+                # Beri waktu agar konten baru dimuat oleh JavaScript
+                time.sleep(3) # Anda mungkin perlu menyesuaikan waktu ini (misal: 5 detik jika koneksi lambat)
+
+                # Hitung tinggi halaman yang baru setelah konten dimuat
+                new_height = page.evaluate("document.body.scrollHeight")
+                
+                # Jika tinggi halaman tidak bertambah, berarti kita sudah sampai di paling bawah
+                if new_height == last_height:
+                    print("Telah mencapai bagian bawah halaman.")
+                    break
+                
+                last_height = new_height
+            # === LOGIKA SCROLLING SELESAI ===
+
+            print("Mengambil seluruh konten HTML setelah di-scroll...")
             html_content = page.content()
             browser.close()
 
             # Parsing konten HTML dengan BeautifulSoup
             soup = BeautifulSoup(html_content, 'html.parser')
-
             latest_update_container = soup.find('div', class_='latest-update')
             anime_items = latest_update_container.find_all('div', class_='show-item')
             
-            print(f"Menemukan {len(anime_items)} item anime.")
+            print(f"Menemukan {len(anime_items)} item anime setelah scrolling.")
 
             for item in anime_items:
                 try:
@@ -79,6 +99,6 @@ if __name__ == "__main__":
     if data:
         with open('latest_anime.json', 'w', encoding='utf-8') as f:
             json.dump(data, f, ensure_ascii=False, indent=4)
-        print("\nScraping berhasil! Data disimpan di file 'latest_anime.json'")
+        print(f"\nScraping berhasil! Total {len(data)} data disimpan di file 'latest_anime.json'")
     else:
         print("\nScraping gagal atau tidak ada data yang ditemukan. File JSON tidak dibuat.")
