@@ -1,14 +1,15 @@
-# scraper.py (Final Robust Version)
+# scraper.py (Final Version with Smart Pagination & Robust Metadata)
 
 import json
 import time
 import os
+import re
 from playwright.sync_api import sync_playwright, TimeoutError
 from bs4 import BeautifulSoup
 
 DATABASE_FILE = "anime_database.json"
 PAGINATION_THRESHOLD = 50 
-EPISODE_BATCH_LIMIT = 20 # Batas cicilan per eksekusi
+EPISODE_BATCH_LIMIT = 10 # Batas cicilan per eksekusi
 
 def load_database():
     if os.path.exists(DATABASE_FILE):
@@ -62,35 +63,25 @@ def scrape_main_page_shows(page):
         return []
 
 def scrape_show_details(page, show_url):
-    """(ROBUST) Mengambil metadata detail dari halaman anime."""
     print(f"   - Mengambil metadata dari: {show_url}")
     details = {}
     try:
         page.goto(show_url, timeout=90000)
         
-        # Ambil Poster
-        poster_locator = page.locator("div.banner-section div.v-image__image").first
-        poster_style = poster_locator.get_attribute("style", timeout=10000)
-        details["poster_image_url"] = poster_style.split('url("')[1].split('")')[0]
-        
-        # Ambil Sinopsis
+        details["poster_image_url"] = page.locator("div.banner-section div.v-image__image").first.get_attribute("style").split('url("')[1].split('")')[0]
         details["synopsis"] = page.locator("div.v-card__text div.text-caption").inner_text(timeout=5000)
-        
-        # Ambil Genre (jika ada)
         details["genres"] = [g.inner_text() for g in page.locator(".anime-info-card .v-card__text span.v-chip__content").all()]
 
-        # --- PERBAIKAN UTAMA DI SINI ---
-        # Ambil Tipe dan Tahun dengan cara yang lebih aman
+        # --- PERBAIKAN LOGIKA METADATA ---
         info_texts = [info.inner_text() for info in page.locator(".anime-info-card .d-flex.mt-2.mb-3 div.text-subtitle-2").all()]
-        details["type"] = info_texts[0] if len(info_texts) > 0 else "N/A"
-        details["year"] = info_texts[2] if len(info_texts) > 2 else "N/A"
+        details["type"] = next((text for text in info_texts if text in ["TV", "Movie", "OVA", "ONA", "Special"]), "N/A")
+        details["year"] = next((text for text in info_texts if re.match(r'^\d{4}$', text)), "N/A")
         
         print("     Metadata berhasil diambil.")
     except Exception as e:
         print(f"     [PERINGATAN] Gagal mengambil sebagian atau semua metadata: {e}")
     return details
 
-# --- FUNGSI UTAMA YANG DIROMBAK TOTAL ---
 def main():
     db_shows = load_database()
 
@@ -125,6 +116,7 @@ def main():
 
                 existing_ep_numbers = {ep['episode_number'] for ep in db_shows[show_url].get('episodes', [])}
                 
+                episodes_to_process_map = {}
                 page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
                 page_options_texts = ["default"]
                 if page_dropdown.is_visible():
@@ -133,7 +125,6 @@ def main():
                     page_options_texts = [opt.inner_text() for opt in page.locator(".v-menu__content .v-list-item__title").all()]
                     page.keyboard.press("Escape")
                 
-                episodes_to_process_map = {}
                 for page_range in page_options_texts:
                     if page_range != "default":
                         current_page_text = page_dropdown.locator(".v-select__selection").inner_text()
@@ -152,7 +143,8 @@ def main():
                     print("   Tidak ada episode baru untuk di-scrape.")
                     continue
 
-                episodes_to_scrape = list(episodes_to_process_map.keys())
+                episodes_to_scrape = sorted(list(episodes_to_process_map.keys()), key=lambda x: int(''.join(filter(str.isdigit, x.split()[-1])) or 0))
+
                 print(f"   Ditemukan {len(episodes_to_scrape)} episode baru untuk diproses.")
                 if len(episodes_to_scrape) > EPISODE_BATCH_LIMIT:
                      print(f"   Akan memproses {EPISODE_BATCH_LIMIT} episode saja (cicilan).")
@@ -169,12 +161,12 @@ def main():
                             page_dropdown.click(force=True, timeout=10000)
                             page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
                             page.locator(f".v-menu__content .v-list-item__title:has-text('{target_page_range}')").click()
-                            page.wait_for_selector(".v-menu__content", state="hidden"); time.sleep(1.5)
-                        
+                            page.wait_for_selector(".v-menu__content", state="hidden"); time.sleep(2)
+
                         ep_element = page.locator(f"div.episode-item:has-text('{ep_num}')").first
                         ep_element.click(timeout=15000)
-                        page.wait_for_selector("div.player-container iframe", state='attached', timeout=60000)
                         
+                        page.wait_for_selector("div.player-container iframe", state='attached', timeout=90000)
                         iframe_element = page.locator("div.player-container iframe.player")
                         iframe_element.wait_for(state="visible", timeout=30000)
                         iframe_src = iframe_element.get_attribute('src')
