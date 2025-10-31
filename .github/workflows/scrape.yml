@@ -40,7 +40,7 @@ jobs:
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          git add latest_anime_with_episodes.json
+          git add anime_database.json
           # Commit hanya jika ada perubahan
           if git diff-index --quiet HEAD; then
             echo "No changes to commit."
