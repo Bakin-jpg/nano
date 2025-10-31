@@ -11,7 +11,6 @@ jobs:
   scrape:
     runs-on: ubuntu-latest
 
-    # Berikan izin untuk push ke repo
     permissions:
       contents: write
 
@@ -33,23 +32,22 @@ jobs:
         run: playwright install --with-deps chromium
           
       - name: Run main scraper script
-        run: python scraper.py
+        # --- PERUBAHAN DI SINI: Tambahkan flag "-u" ---
+        run: python -u scraper.py
       
-      # Commit dan Push hasil JSON ke repositori
       - name: Commit and Push results
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
           git add anime_database.json
-          # Commit hanya jika ada perubahan
           if git diff-index --quiet HEAD; then
             echo "No changes to commit."
           else
-            git commit -m "Update latest anime data with episodes" -a
+            git commit -m "Update anime database" -a
           fi
       
       - name: Push changes
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: main # Sesuaikan nama branch Anda
+          branch: main
