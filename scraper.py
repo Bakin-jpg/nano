@@ -1,4 +1,4 @@
-# scraper.py (Final Version with Stale Element Reference Fix)
+# scraper.py (Versi Perbaikan)
 
 import json
 import time
@@ -155,32 +155,99 @@ def main():
                 episodes_to_process_map = {}
                 page_options_texts = ["default"]
                 
-                # PERBAIKAN KUNCI: Locator untuk dropdown Page dipindahkan ke sini, untuk mendapatkan referensi yang FRESH.
-                page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
-                
-                if page_dropdown.is_visible():
-                    page_dropdown.click(timeout=10000)
-                    page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
-                    page_options_texts = [opt.inner_text() for opt in page.locator(".v-menu__content .v-list-item__title").all()]
-                    page.locator('div.episode-list-container .v-card__title').click()
-                    page.wait_for_selector(".v-menu__content", state="hidden")
+                # PERBAIKAN UTAMA: Pendekatan yang lebih robust untuk dropdown Page
+                try:
+                    # Cari dropdown Page dengan cara yang lebih spesifik
+                    page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
+                    
+                    if page_dropdown.is_visible():
+                        # Pastikan elemen terlihat sebelum diklik
+                        page_dropdown.scroll_into_view_if_needed()
+                        
+                        # Tunggu sebentar sebelum klik
+                        time.sleep(0.5)
+                        
+                        # Klik dropdown
+                        page_dropdown.click(timeout=10000)
+                        
+                        # Tunggu menu muncul dengan timeout lebih lama
+                        try:
+                            page.wait_for_selector(".v-menu__content", state="visible", timeout=15000)
+                            # Tunggu item menu muncul
+                            page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible", timeout=10000)
+                            
+                            # Ambil semua opsi halaman
+                            page_options = page.locator(".v-menu__content .v-list-item__title").all()
+                            page_options_texts = [opt.inner_text() for opt in page_options]
+                            
+                            print(f"      - Ditemukan {len(page_options_texts)} opsi halaman")
+                        except TimeoutError:
+                            print("      [PERINGATAN] Timeout saat menunggu opsi halaman muncul. Menggunakan default.")
+                            page_options_texts = ["default"]
+                        
+                        # Tutup dropdown dengan cara yang lebih aman
+                        try:
+                            # Coba klik di luar dropdown
+                            page.locator('div.episode-list-container .v-card__title').click()
+                            page.wait_for_selector(".v-menu__content", state="hidden", timeout=5000)
+                        except:
+                            # Jika gagal, coba tekan ESC
+                            page.keyboard.press('Escape')
+                            time.sleep(0.5)
+                except Exception as e:
+                    print(f"   [PERINGATAN] Error saat memproses dropdown Page: {e}")
+                    page_options_texts = ["default"]
 
                 for page_range in page_options_texts:
                     if page_range != "default":
-                        # Cari ulang locator di setiap iterasi loop untuk keamanan maksimum
-                        current_page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
-                        current_page_text = current_page_dropdown.locator(".v-select__selection").inner_text()
-                        if current_page_text != page_range:
-                            current_page_dropdown.click(force=True, timeout=10000)
-                            page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
-                            page.locator(f".v-menu__content .v-list-item__title:has-text('{page_range}')").click()
-                            page.wait_for_selector(".v-menu__content", state="hidden");
-                            page.wait_for_selector("div.episode-item", state="attached")
+                        # PERBAIKAN: Dapatkan ulang locator di setiap iterasi untuk menghindari stale reference
+                        try:
+                            current_page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
+                            if current_page_dropdown.is_visible():
+                                current_page_text = current_page_dropdown.locator(".v-select__selection").inner_text()
+                                if current_page_text != page_range:
+                                    print(f"      - Mengganti ke halaman: {page_range}")
+                                    
+                                    # Pastikan elemen terlihat
+                                    current_page_dropdown.scroll_into_view_if_needed()
+                                    time.sleep(0.5)
+                                    
+                                    # Klik dropdown
+                                    current_page_dropdown.click(timeout=10000)
+                                    
+                                    # Tunggu menu muncul
+                                    try:
+                                        page.wait_for_selector(".v-menu__content", state="visible", timeout=15000)
+                                        page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible", timeout=10000)
+                                        
+                                        # Klik opsi yang diinginkan
+                                        page.locator(f".v-menu__content .v-list-item__title:has-text('{page_range}')").click()
+                                        page.wait_for_selector(".v-menu__content", state="hidden", timeout=10000)
+                                        page.wait_for_selector("div.episode-item", state="attached", timeout=10000)
+                                        time.sleep(0.5)
+                                    except TimeoutError:
+                                        print(f"      [PERINGATAN] Timeout saat mengganti ke halaman {page_range}")
+                                        # Coba tutup menu dan lanjutkan
+                                        try:
+                                            page.keyboard.press('Escape')
+                                            time.sleep(0.5)
+                                        except:
+                                            pass
+                        except Exception as e:
+                            print(f"      [PERINGATAN] Error saat navigasi halaman: {e}")
 
-                    for ep_element in page.locator("div.episode-item").all():
-                        ep_num = ep_element.locator("span.v-chip__content").inner_text()
-                        if ep_num not in existing_ep_numbers:
-                            episodes_to_process_map[ep_num] = page_range
+                    # Proses episode di halaman ini
+                    try:
+                        episode_items = page.locator("div.episode-item").all()
+                        for ep_element in episode_items:
+                            try:
+                                ep_num = ep_element.locator("span.v-chip__content").inner_text()
+                                if ep_num not in existing_ep_numbers:
+                                    episodes_to_process_map[ep_num] = page_range
+                            except:
+                                continue
+                    except Exception as e:
+                        print(f"      [PERINGATAN] Error saat mengambil episode: {e}")
 
                 if not episodes_to_process_map:
                     print("   Tidak ada episode baru untuk di-scrape.")
@@ -198,33 +265,60 @@ def main():
                     print(f"      - Memproses iframe: {ep_num} ({i+1}/{len(episodes_to_scrape)})")
                     try:
                         target_page_range = episodes_to_process_map[ep_num]
-                        # Cari ulang locator lagi di sini sebelum digunakan
-                        current_page_dropdown_nav = page.locator("div.v-card__title .v-select").filter(has_text="Page")
-                        if current_page_dropdown_nav.is_visible():
-                            current_page_text = current_page_dropdown_nav.locator(".v-select__selection").inner_text()
-                            if target_page_range != "default" and target_page_range != current_page_text:
-                                print(f"         Navigasi ke halaman '{target_page_range}'...")
-                                current_page_dropdown_nav.click(force=True, timeout=10000)
-                                page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
-                                page.locator(f".v-menu__content .v-list-item__title:has-text('{target_page_range}')").click()
-                                page.wait_for_selector(".v-menu__content", state="hidden");
-                                page.wait_for_selector("div.episode-item", state="attached")
-                                time.sleep(0.5)
+                        # PERBAIKAN: Dapatkan ulang locator sebelum digunakan
+                        try:
+                            current_page_dropdown_nav = page.locator("div.v-card__title .v-select").filter(has_text="Page")
+                            if current_page_dropdown_nav.is_visible():
+                                current_page_text = current_page_dropdown_nav.locator(".v-select__selection").inner_text()
+                                if target_page_range != "default" and target_page_range != current_page_text:
+                                    print(f"         Navigasi ke halaman '{target_page_range}'...")
+                                    
+                                    # Pastikan elemen terlihat
+                                    current_page_dropdown_nav.scroll_into_view_if_needed()
+                                    time.sleep(0.5)
+                                    
+                                    # Klik dropdown
+                                    current_page_dropdown_nav.click(timeout=10000)
+                                    
+                                    # Tunggu menu muncul
+                                    try:
+                                        page.wait_for_selector(".v-menu__content", state="visible", timeout=15000)
+                                        page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible", timeout=10000)
+                                        
+                                        # Klik opsi yang diinginkan
+                                        page.locator(f".v-menu__content .v-list-item__title:has-text('{target_page_range}')").click()
+                                        page.wait_for_selector(".v-menu__content", state="hidden", timeout=10000)
+                                        page.wait_for_selector("div.episode-item", state="attached", timeout=10000)
+                                        time.sleep(0.5)
+                                    except TimeoutError:
+                                        print(f"         [PERINGATAN] Timeout saat navigasi ke halaman {target_page_range}")
+                                        # Coba tutup menu dan lanjutkan
+                                        try:
+                                            page.keyboard.press('Escape')
+                                            time.sleep(0.5)
+                                        except:
+                                            pass
+                        except Exception as e:
+                            print(f"         [PERINGATAN] Error saat navigasi: {e}")
 
+                        # Klik episode
                         ep_element = page.locator(f"div.episode-item:has-text('{ep_num}')").first
                         ep_element.click(timeout=15000)
 
+                        # Tunggu iframe muncul
                         page.wait_for_selector("div.player-container iframe", state='attached', timeout=90000)
                         iframe_element = page.locator("div.player-container iframe.player")
                         iframe_element.wait_for(state="visible", timeout=30000)
                         iframe_src = iframe_element.get_attribute('src')
 
+                        # Simpan data episode
                         db_shows[show_url]['episodes'].append({
                             "episode_number": ep_num, "episode_url": page.url, "iframe_url": iframe_src
                         })
                     except Exception as e:
                         print(f"        [PERINGATAN] Gagal memproses iframe untuk {ep_num}: {e}")
 
+                # Urutkan episode
                 db_shows[show_url]['episodes'].sort(key=lambda x: int(''.join(filter(str.isdigit, x.get('episode_number', '0').split()[-1])) or 0))
 
             except Exception as e:
