@@ -1,16 +1,17 @@
-name: Scrape Latest Anime
+# .github/workflows/scrape.yml
+
+name: Run Main Anime Scraper
 
 on:
   schedule:
-    - cron: '0 */6 * * *'
-  workflow_dispatch:
+    - cron: '0 */12 * * *' # Jalankan setiap 12 jam
+  workflow_dispatch: # Izinkan untuk dijalankan manual
 
 jobs:
   scrape:
     runs-on: ubuntu-latest
 
-    # --- INILAH SOLUSINYA ---
-    # Tambahkan blok ini untuk memberikan izin menulis (push) ke repositori
+    # Berikan izin untuk push ke repo
     permissions:
       contents: write
 
@@ -31,26 +32,24 @@ jobs:
       - name: Install Playwright Browsers
         run: playwright install --with-deps chromium
           
-      - name: Run scraper
+      - name: Run main scraper script
         run: python scraper.py
-
-      - name: Commit results
+      
+      # Commit dan Push hasil JSON ke repositori
+      - name: Commit and Push results
         run: |
           git config --local user.email "action@github.com"
           git config --local user.name "GitHub Action"
-          if [ -f "latest_anime.json" ]; then
-            git add latest_anime.json
-            if git diff-index --quiet HEAD; then
-              echo "No changes to commit."
-            else
-              git commit -m "Update latest anime data" -a
-            fi
+          git add latest_anime_with_episodes.json
+          # Commit hanya jika ada perubahan
+          if git diff-index --quiet HEAD; then
+            echo "No changes to commit."
           else
-            echo "latest_anime.json not found. Skipping commit."
+            git commit -m "Update latest anime data with episodes" -a
           fi
-          
+      
       - name: Push changes
         uses: ad-m/github-push-action@master
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          branch: main # Sesuaikan dengan nama branch Anda
+          branch: main # Sesuaikan nama branch Anda
