@@ -24,7 +24,9 @@ def load_database():
     return {}
 
 def save_database(data_dict):
-    sorted_data = sorted(data_dict.values(), key=lambda x: x.get('title', ''))
+    # Mengonversi dict kembali ke list sebelum menyimpan
+    data_list = list(data_dict.values())
+    sorted_data = sorted(data_list, key=lambda x: x.get('title', ''))
     with open(DATABASE_FILE, 'w', encoding='utf-8') as f:
         json.dump(sorted_data, f, ensure_ascii=False, indent=4)
     print(f"\nDatabase berhasil disimpan ke '{DATABASE_FILE}'.")
@@ -64,6 +66,7 @@ def scrape_show_details(page, show_url):
     details = {}
     try:
         page.goto(show_url, timeout=90000)
+        page.wait_for_load_state('networkidle')
         details["poster_image_url"] = page.locator("div.banner-section div.v-image__image").first.get_attribute("style").split('url("')[1].split('")')[0]
         details["synopsis"] = page.locator("div.v-card__text div.text-caption").inner_text(timeout=5000)
         details["genres"] = [g.inner_text() for g in page.locator(".anime-info-card .v-card__text span.v-chip__content").all()]
@@ -75,37 +78,91 @@ def scrape_show_details(page, show_url):
         print(f"     [PERINGATAN] Gagal mengambil sebagian atau semua metadata: {e}")
     return details
 
+def get_available_languages(page, language_dropdown):
+    print("   Dropdown Sub/Dub ditemukan.")
+    try:
+        language_dropdown.click(timeout=10000)
+        page.wait_for_selector("div.v-menu__content", state="visible", timeout=10000)
+        time.sleep(1) # Beri waktu untuk render
+        
+        all_lang_texts = [opt.inner_text() for opt in page.locator("div.v-menu__content .v-list-item__title").all()]
+        
+        # Klik di tempat lain untuk menutup dropdown, lebih andal daripada Escape
+        page.locator("h1.text-h5").click()
+        page.wait_for_selector("div.v-menu__content", state="hidden", timeout=10000)
+
+        lang_keywords = ['japanese', 'english', 'chinese']
+        available_languages = [lang for lang in all_lang_texts if any(key in lang.lower() for key in lang_keywords)]
+        
+        if not available_languages:
+            return ["Default"]
+        return available_languages
+    except Exception as e:
+        print(f"     [PERINGATAN] Gagal mendapatkan daftar bahasa. Menggunakan 'Default'. Error: {e}")
+        # Jika gagal, coba tekan escape untuk memulihkan diri
+        page.keyboard.press("Escape")
+        return ["Default"]
+
+def change_language(page, language_dropdown, target_lang):
+    try:
+        current_lang = language_dropdown.locator(".v-select__selection").inner_text(timeout=5000)
+        if target_lang.strip().lower() in current_lang.strip().lower():
+            return True # Bahasa sudah sesuai
+
+        print(f"           Mengubah bahasa ke '{target_lang}'...")
+        language_dropdown.click(timeout=10000)
+        page.wait_for_selector("div.v-menu__content[role='menu']", state="visible", timeout=10000)
+        time.sleep(1) # Beri waktu untuk render
+
+        option_to_click = page.locator(f"div.v-menu__content .v-list-item__title:has-text('{target_lang}')").first
+        option_to_click.click(timeout=10000)
+        
+        # DIHAPUS: Baris ini adalah penyebab utama timeout.
+        # page.wait_for_selector("div.v-menu__content[role='menu']", state="hidden", timeout=10000)
+        
+        # DITAMBAH: Tunggu hingga loading spinner hilang atau beri jeda
+        page.wait_for_selector("div.v-progress-circular", state="hidden", timeout=15000)
+        time.sleep(2) # Beri jeda tambahan setelah perubahan
+        
+        print("           Bahasa berhasil diubah.")
+        return True
+    except Exception as e:
+        print(f"           [PERINGATAN] Gagal mengubah bahasa ke '{target_lang}': {e}")
+        page.keyboard.press("Escape") # Coba pulihkan
+        return False
+
 def main():
     db_shows = load_database()
     with sync_playwright() as p:
-        # PERBAIKAN DI BARIS INI: kembali ke headless=True
         browser = p.chromium.launch(headless=True)
         context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
-        page = context.new_page()
-
-        latest_shows_list = scrape_main_page_shows(page)
-        page.close()
+        
+        # Proses halaman utama di page terpisah
+        main_page = context.new_page()
+        latest_shows_list = scrape_main_page_shows(main_page)
+        main_page.close()
 
         if not latest_shows_list:
-            browser.close(); return
+            browser.close()
+            return
         
         print("\n=== TAHAP 2: MEMPROSES SETIAP ANIME DAN EPISODENYA ===")
         for show_summary in latest_shows_list:
             show_url = show_summary['show_url']
             
-            if show_url not in db_shows:
-                print(f"\nMemproses anime baru: '{show_summary['title']}'")
-                page = context.new_page()
-                details = scrape_show_details(page, show_url)
-                db_shows[show_url] = {**show_summary, **details, "episodes": []}
-                page.close()
-            else:
-                print(f"\nMengecek episode untuk: '{show_summary['title']}'")
-                if 'episodes' not in db_shows[show_url]:
-                    db_shows[show_url]['episodes'] = []
-
+            # Buka page baru untuk setiap anime agar terisolasi
             page = context.new_page()
+
             try:
+                if show_url not in db_shows:
+                    print(f"\nMemproses anime baru: '{show_summary['title']}'")
+                    details = scrape_show_details(page, show_url)
+                    db_shows[show_url] = {**show_summary, **details, "episodes": []}
+                else:
+                    print(f"\nMengecek episode untuk: '{show_summary['title']}'")
+                    if 'episodes' not in db_shows[show_url]:
+                        db_shows[show_url]['episodes'] = []
+
                 page.goto(show_url, timeout=90000)
                 page.locator("a.pulse-button:has-text('Watch Now')").click()
                 page.wait_for_selector("div.episode-item", timeout=60000)
@@ -114,22 +171,11 @@ def main():
                 available_languages = ["Default"]
                 
                 if language_dropdown.is_visible(timeout=5000):
-                    print("   Dropdown Sub/Dub ditemukan.")
-                    language_dropdown.click()
-                    page.wait_for_selector("div.v-menu__content", state="visible", timeout=5000)
-                    time.sleep(0.5)
-                    all_lang_texts = [opt.inner_text() for opt in page.locator("div.v-menu__content .v-list-item__title").all()]
-                    page.keyboard.press("Escape")
-                    page.wait_for_selector("div.v-menu__content", state="hidden")
-                    
-                    lang_keywords = ['japanese', 'english', 'chinese']
-                    available_languages = [lang for lang in all_lang_texts if any(key in lang.lower() for key in lang_keywords)]
-                    if not available_languages: available_languages = ["Default"]
+                    available_languages = get_available_languages(page, language_dropdown)
                 
                 print(f"   Akan memproses bahasa: {available_languages}")
                 
                 all_episodes_map = {}
-                # Logika paginasi tidak diubah
                 for ep_element in page.locator("div.episode-item").all():
                     ep_num = ep_element.locator("span.v-chip__content").inner_text()
                     all_episodes_map[ep_num] = "default"
@@ -142,7 +188,6 @@ def main():
 
                 if not episodes_to_scrape_nums:
                     print("   Tidak ada episode baru untuk di-scrape.")
-                    page.close()
                     continue
 
                 print(f"   Ditemukan {len(episodes_to_scrape_nums)} episode baru.")
@@ -151,57 +196,40 @@ def main():
                     print(f"      - Memproses Episode: {ep_num}")
                     episode_data = {"episode_number": ep_num, "sources": []}
                     
+                    try:
+                        # Klik episode terlebih dahulu
+                        page.locator(f"div.episode-item:has-text('{ep_num}')").first.click(timeout=15000)
+                        page.wait_for_selector("div.player-container", timeout=15000)
+                        time.sleep(1)
+                    except Exception as e:
+                        print(f"      [PERINGATAN] Gagal mengklik episode {ep_num}. Melewati. Error: {e}")
+                        continue
+                    
                     for lang_option in available_languages:
                         print(f"         - Mencoba bahasa: '{lang_option}'")
+                        
+                        if lang_option != "Default" and language_dropdown.is_visible():
+                            change_language(page, language_dropdown, lang_option)
+
+                        iframe_src = None
                         try:
-                            if lang_option != "Default" and language_dropdown.is_visible():
-                                current_lang = language_dropdown.locator(".v-select__selection").inner_text()
-                                if current_lang.strip() != lang_option.strip():
-                                    print("           Mengubah bahasa...")
-                                    language_dropdown.click()
-                                    page.wait_for_selector("div.v-menu__content[role='menu']", state="visible", timeout=5000)
-                                    time.sleep(0.5)
+                            # Tunggu iframe untuk muncul setelah klik/ganti bahasa
+                            page.wait_for_selector("div.player-container iframe", state='attached', timeout=20000)
+                            all_iframes = page.locator("div.player-container iframe").all()
+                            for frame in all_iframes:
+                                src_attr = frame.get_attribute('src') or ''
+                                if 'disqus' not in src_attr and src_attr:
+                                    iframe_src = src_attr
+                                    print(f"           Iframe video ditemukan: {iframe_src[:50]}...")
+                                    break
+                        except TimeoutError:
+                            print("           Tidak ada iframe yang muncul dalam waktu yang ditentukan.")
+                        
+                        if iframe_src:
+                            episode_data["sources"].append({"language": lang_option, "iframe_url": iframe_src})
+                        else:
+                            print("           Tidak ada iframe video yang valid untuk bahasa ini.")
 
-                                    target_option_locator = page.locator(f"div.v-menu__content .v-list-item__title:text-matches('^{re.escape(lang_option)}$')")
-                                    
-                                    try:
-                                        print("           Mencoba klik paksa...")
-                                        target_option_locator.click(force=True, timeout=5000)
-                                    except Exception as e:
-                                        print(f"           Klik paksa gagal: {e}. Mencoba metode keyboard.")
-                                        language_dropdown.click()
-                                        page.wait_for_selector("div.v-menu__content[role='menu']", state="visible", timeout=5000)
-                                        target_option_locator.focus()
-                                        page.keyboard.press("Enter")
-                                    
-                                    page.wait_for_selector("div.v-menu__content[role='menu']", state="hidden", timeout=5000)
-                                    print("           Bahasa berhasil diubah.")
-                                    time.sleep(2)
-
-                            page.locator(f"div.episode-item:has-text('{ep_num}')").first.click(timeout=15000)
-                            
-                            iframe_src = None
-                            try:
-                                page.wait_for_selector("div.player-container iframe", state='attached', timeout=20000)
-                                all_iframes = page.locator("div.player-container iframe").all()
-                                for frame in all_iframes:
-                                    src_attr = frame.get_attribute('src') or ''
-                                    if 'disqus' not in src_attr and src_attr:
-                                        iframe_src = src_attr
-                                        print(f"           Iframe video ditemukan: {iframe_src[:50]}...")
-                                        break
-                            except TimeoutError:
-                                print("           Tidak ada iframe yang muncul dalam waktu yang ditentukan.")
-                            
-                            if iframe_src:
-                                episode_data["sources"].append({"language": lang_option, "iframe_url": iframe_src})
-                            else:
-                                print("           Tidak ada iframe video yang valid untuk bahasa ini.")
-
-                        except Exception as e:
-                            print(f"           [PERINGATAN] Gagal memproses bahasa '{lang_option}' untuk {ep_num}: {e}")
-                            page.keyboard.press("Escape")
-                    
                     if episode_data["sources"]:
                         db_shows[show_url]['episodes'].append(episode_data)
                 
@@ -212,9 +240,12 @@ def main():
             finally:
                 if not page.is_closed():
                     page.close()
+                # Simpan database setelah setiap anime selesai diproses
+                save_database(db_shows)
 
         browser.close()
-        save_database(db_shows)
+        # Hapus save_database dari sini karena sudah dipindah ke dalam loop
+        # save_database(db_shows)
 
 if __name__ == "__main__":
     main()
