@@ -1,4 +1,4 @@
-# scraper.py (Final Version with Intelligent Waits, Stable Dropdown Handling & Smart Pagination)
+# scraper.py (Final Version with Stabilization Pause & Robust Dropdown Closing)
 
 import json
 import time
@@ -112,9 +112,10 @@ def main():
                 page.goto(show_url, timeout=90000)
                 page.locator("a.pulse-button:has-text('Watch Now')").click()
                 page.wait_for_selector("div.episode-item", timeout=60000)
+                
+                # Menunggu judul halaman muncul sebagai target klik yang aman
+                page.wait_for_selector('h1.text-h6', timeout=10000)
 
-                # =========================================================================
-                # === BLOK SUBTITLE YANG DIRANCANG ULANG UNTUK STABILITAS MAKSIMAL ===
                 try:
                     target_language = "Japanese (Sub)"
                     print(f"   Mengecek dropdown Sub/Dub...")
@@ -136,21 +137,23 @@ def main():
                         if target_option.is_visible():
                             target_option.click()
                             print(f"      - Mengganti ke '{target_language}'. Menunggu daftar episode dimuat ulang...")
-                            # TUNGGU DENGAN CERDAS: Tunggu sampai menu dropdown tertutup dan item episode muncul lagi
                             page.wait_for_selector(".v-menu__content", state="hidden", timeout=10000)
                             page.wait_for_selector("div.episode-item", state="attached", timeout=10000)
                             print("      - Daftar episode berhasil dimuat ulang.")
                         else:
                             print(f"      - Opsi '{target_language}' tidak tersedia. Menutup dropdown.")
-                            page.keyboard.press("Escape")
-                            # Tunggu hingga menu dropdown tertutup
+                            # PERBAIKAN 1: Klik di luar menu untuk menutupnya, lebih andal daripada Escape
+                            page.locator('h1.text-h6').click() 
                             page.wait_for_selector(".v-menu__content", state="hidden", timeout=10000)
 
                 except TimeoutError:
                     print("   [INFO] Dropdown Sub/Dub tidak ditemukan atau tidak interaktif. Melanjutkan dengan pilihan default.")
                 except Exception as e:
                     print(f"   [PERINGATAN] Terjadi error saat mencoba mengganti sub: {e}")
-                # =========================================================================
+                
+                # PERBAIKAN 2: Jeda singkat untuk stabilisasi halaman setelah interaksi dropdown pertama
+                print("   Memberi jeda untuk stabilisasi halaman...")
+                time.sleep(1.5)
 
                 existing_ep_numbers = {ep['episode_number'] for ep in db_shows[show_url].get('episodes', [])}
 
@@ -158,13 +161,13 @@ def main():
                 page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
                 page_options_texts = ["default"]
                 
-                # Cek dulu apakah dropdown page terlihat sebelum berinteraksi
                 if page_dropdown.is_visible():
                     page_dropdown.click(timeout=10000)
                     page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
                     page_options_texts = [opt.inner_text() for opt in page.locator(".v-menu__content .v-list-item__title").all()]
-                    page.keyboard.press("Escape")
-                    page.wait_for_selector(".v-menu__content", state="hidden") # Pastikan menu tertutup
+                    # PERBAIKAN 1 (Diterapkan di sini juga): Klik di luar untuk menutup
+                    page.locator('h1.text-h6').click()
+                    page.wait_for_selector(".v-menu__content", state="hidden")
 
                 for page_range in page_options_texts:
                     if page_range != "default":
@@ -174,8 +177,8 @@ def main():
                             page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
                             page.locator(f".v-menu__content .v-list-item__title:has-text('{page_range}')").click()
                             page.wait_for_selector(".v-menu__content", state="hidden");
-                            page.wait_for_selector("div.episode-item", state="attached") # Tunggu episode dimuat
-                            time.sleep(1) # Jeda tambahan untuk stabilitas
+                            page.wait_for_selector("div.episode-item", state="attached")
+                            time.sleep(1)
 
                     for ep_element in page.locator("div.episode-item").all():
                         ep_num = ep_element.locator("span.v-chip__content").inner_text()
@@ -205,8 +208,8 @@ def main():
                                 page_dropdown.click(force=True, timeout=10000)
                                 page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
                                 page.locator(f".v-menu__content .v-list-item__title:has-text('{target_page_range}')").click()
-                                page.wait_for_selector(".v-menu__content", state="hidden"); 
-                                page.wait_for_selector("div.episode-item", state="attached") # Tunggu episode dimuat
+                                page.wait_for_selector(".v-menu__content", state="hidden");
+                                page.wait_for_selector("div.episode-item", state="attached")
                                 time.sleep(1)
 
                         ep_element = page.locator(f"div.episode-item:has-text('{ep_num}')").first
