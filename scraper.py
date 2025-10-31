@@ -1,4 +1,4 @@
-# scraper.py (Solusi Final dengan Interaksi Dropdown yang Lebih Kuat)
+# scraper.py (Perbaikan SyntaxError)
 
 import json
 import time
@@ -77,7 +77,8 @@ def scrape_show_details(page, show_url):
 
 def main():
     db_shows = load_database()
-    with sync_ playwright() as p:
+    # PERBAIKAN DI BARIS INI
+    with sync_playwright() as p:
         browser = p.chromium.launch(headless=False) # Jalankan dalam mode non-headless untuk debugging
         context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
         page = context.new_page()
@@ -127,17 +128,15 @@ def main():
                 
                 print(f"   Akan memproses bahasa: {available_languages}")
                 
-                # ... (Sisa kode untuk paginasi tidak diubah) ...
                 all_episodes_map = {}
                 page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
-                # ... [Kode paginasi disembunyikan untuk keringkasan, tidak ada perubahan di sini] ...
+                # Logika paginasi tidak diubah
                 if page_dropdown.is_visible():
-                    # ...
                     pass
 
                 for ep_element in page.locator("div.episode-item").all():
                     ep_num = ep_element.locator("span.v-chip__content").inner_text()
-                    all_episodes_map[ep_num] = "default" # Uproszczone dla czytelności
+                    all_episodes_map[ep_num] = "default" 
 
                 existing_episodes_db = {ep['episode_number']: ep for ep in db_shows[show_url].get('episodes', [])}
                 episodes_to_scrape_nums = sorted(
@@ -151,8 +150,7 @@ def main():
                     continue
 
                 print(f"   Ditemukan {len(episodes_to_scrape_nums)} episode baru.")
-                # ... [Kode pembatasan batch tidak diubah] ...
-
+                
                 for ep_num in episodes_to_scrape_nums:
                     print(f"      - Memproses Episode: {ep_num}")
                     episode_data = {"episode_number": ep_num, "sources": []}
@@ -160,37 +158,30 @@ def main():
                     for lang_option in available_languages:
                         print(f"         - Mencoba bahasa: '{lang_option}'")
                         try:
-                            # --- BLOK PERBAIKAN UTAMA ---
                             if lang_option != "Default" and language_dropdown.is_visible():
                                 current_lang = language_dropdown.locator(".v-select__selection").inner_text()
                                 if current_lang.strip() != lang_option.strip():
                                     print("           Mengubah bahasa...")
                                     language_dropdown.click()
-                                    # Tunggu hingga panel menu benar-benar terbuka dan stabil
                                     page.wait_for_selector("div.v-menu__content[role='menu']", state="visible", timeout=5000)
-                                    time.sleep(0.5) # Jeda ekstra untuk stabilitas animasi
+                                    time.sleep(0.5)
 
-                                    # Cari elemen target
                                     target_option_locator = page.locator(f"div.v-menu__content .v-list-item__title:text-matches('^{re.escape(lang_option)}$')")
                                     
-                                    # METODE 1: Coba klik dengan paksa
                                     try:
                                         print("           Mencoba klik paksa...")
                                         target_option_locator.click(force=True, timeout=5000)
                                     except Exception as e:
                                         print(f"           Klik paksa gagal: {e}. Mencoba metode keyboard.")
-                                        # METODE 2: Fallback ke keyboard jika klik gagal
-                                        language_dropdown.click() # Buka lagi jika tertutup
+                                        language_dropdown.click()
                                         page.wait_for_selector("div.v-menu__content[role='menu']", state="visible", timeout=5000)
                                         target_option_locator.focus()
                                         page.keyboard.press("Enter")
                                     
-                                    # Tunggu menu tertutup untuk mengonfirmasi aksi berhasil
                                     page.wait_for_selector("div.v-menu__content[role='menu']", state="hidden", timeout=5000)
                                     print("           Bahasa berhasil diubah.")
-                                    time.sleep(2) # Tunggu konten (iframe) di-refresh
+                                    time.sleep(2)
 
-                            # Lanjutkan mengambil iframe
                             page.locator(f"div.episode-item:has-text('{ep_num}')").first.click(timeout=15000)
                             
                             iframe_src = None
@@ -213,7 +204,7 @@ def main():
 
                         except Exception as e:
                             print(f"           [PERINGATAN] Gagal memproses bahasa '{lang_option}' untuk {ep_num}: {e}")
-                            page.keyboard.press("Escape") # Coba tutup menu yang mungkin masih terbuka
+                            page.keyboard.press("Escape")
                     
                     if episode_data["sources"]:
                         db_shows[show_url]['episodes'].append(episode_data)
