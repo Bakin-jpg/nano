@@ -1,4 +1,4 @@
-# scraper.py (Final Version with Smart Pagination & Robust Metadata)
+# scraper.py (Final Version with Smart Pagination, Robust Metadata & Japanese Sub Selection)
 
 import json
 import time
@@ -114,6 +114,32 @@ def main():
                 page.locator("a.pulse-button:has-text('Watch Now')").click()
                 page.wait_for_selector("div.episode-item", timeout=60000)
 
+                # =========================================================================
+                # === BLOK BARU: MEMILIH SUBTITLE JEPANG UNTUK MEMASTIKAN IFRAME ADA ===
+                try:
+                    target_language = "Japanese (Sub)"
+                    print(f"   Mencoba memilih sub: '{target_language}'...")
+                    lang_button = page.locator(f"div.v-btn-toggle button:has-text('{target_language}')").first
+                    
+                    lang_button.wait_for(state="visible", timeout=10000)
+                    
+                    button_class = lang_button.get_attribute('class') or ''
+                    if 'v-btn--active' not in button_class:
+                        print(f"      - '{target_language}' belum aktif. Mengklik untuk mengganti...")
+                        lang_button.click()
+                        # Tunggu sebentar agar daftar episode yang baru bisa dimuat
+                        time.sleep(3) 
+                        print("      - Berhasil diganti ke Japanese (Sub).")
+                    else:
+                        print(f"      - Sub '{target_language}' sudah aktif.")
+
+                except TimeoutError:
+                    print(f"   [INFO] Pilihan sub '{target_language}' tidak ditemukan. Melanjutkan dengan sub default yang tersedia.")
+                except Exception as e:
+                    print(f"   [PERINGATAN] Terjadi error saat mencoba mengganti sub: {e}")
+                # =========================================================================
+
+
                 existing_ep_numbers = {ep['episode_number'] for ep in db_shows[show_url].get('episodes', [])}
                 
                 episodes_to_process_map = {}
@@ -141,6 +167,7 @@ def main():
 
                 if not episodes_to_process_map:
                     print("   Tidak ada episode baru untuk di-scrape.")
+                    page.close() # Tutup halaman jika tidak ada yang perlu diproses
                     continue
 
                 episodes_to_scrape = sorted(list(episodes_to_process_map.keys()), key=lambda x: int(''.join(filter(str.isdigit, x.split()[-1])) or 0))
@@ -182,7 +209,8 @@ def main():
             except Exception as e:
                 print(f"   [ERROR FATAL] Gagal memproses episode untuk '{show_summary['title']}'. Melewati. Detail: {e}")
             finally:
-                page.close()
+                if not page.is_closed():
+                    page.close()
 
         browser.close()
         save_database(db_shows)
