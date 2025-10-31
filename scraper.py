@@ -1,4 +1,4 @@
-# scraper.py (Perbaikan SyntaxError)
+# scraper.py (Perbaikan untuk Lingkungan Server/Headless)
 
 import json
 import time
@@ -77,9 +77,9 @@ def scrape_show_details(page, show_url):
 
 def main():
     db_shows = load_database()
-    # PERBAIKAN DI BARIS INI
     with sync_playwright() as p:
-        browser = p.chromium.launch(headless=False) # Jalankan dalam mode non-headless untuk debugging
+        # PERBAIKAN DI BARIS INI: kembali ke headless=True
+        browser = p.chromium.launch(headless=True)
         context = browser.new_context(user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36")
         page = context.new_page()
 
@@ -129,14 +129,10 @@ def main():
                 print(f"   Akan memproses bahasa: {available_languages}")
                 
                 all_episodes_map = {}
-                page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
                 # Logika paginasi tidak diubah
-                if page_dropdown.is_visible():
-                    pass
-
                 for ep_element in page.locator("div.episode-item").all():
                     ep_num = ep_element.locator("span.v-chip__content").inner_text()
-                    all_episodes_map[ep_num] = "default" 
+                    all_episodes_map[ep_num] = "default"
 
                 existing_episodes_db = {ep['episode_number']: ep for ep in db_shows[show_url].get('episodes', [])}
                 episodes_to_scrape_nums = sorted(
