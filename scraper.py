@@ -1,4 +1,4 @@
-# scraper.py (Final Version with Correct Dropdown Handling, Smart Pagination & Robust Metadata)
+# scraper.py (Final Version with Case-Insensitive Fix, Correct Dropdown Handling & Smart Pagination)
 
 import json
 import time
@@ -114,19 +114,19 @@ def main():
                 page.wait_for_selector("div.episode-item", timeout=60000)
 
                 # =========================================================================
-                # === BLOK BARU: MENGGANTI SUBTITLE VIA DROPDOWN JIKA TERSEDIA ===
+                # === BLOK MENGGANTI SUBTITLE (DENGAN PERBAIKAN CASE-INSENSITIVE) ===
                 try:
                     target_language = "Japanese (Sub)"
                     print(f"   Mengecek dropdown Sub/Dub...")
                     
-                    # Cari dropdown Sub/Dub, tunggu maksimal 7 detik
                     sub_dub_dropdown = page.locator(".v-select").filter(has_text="Sub/Dub")
                     sub_dub_dropdown.wait_for(state="visible", timeout=7000)
                     
                     current_lang = sub_dub_dropdown.locator(".v-select__selection").inner_text()
                     
-                    if target_language in current_lang:
-                        print(f"      - '{target_language}' sudah aktif.")
+                    # PERBAIKAN: Menggunakan .lower() untuk perbandingan case-insensitive
+                    if target_language.lower() in current_lang.lower():
+                        print(f"      - '{current_lang}' sudah merupakan pilihan yang benar.")
                     else:
                         print(f"      - Pilihan saat ini '{current_lang}'. Mencoba mengganti...")
                         sub_dub_dropdown.click()
@@ -136,15 +136,13 @@ def main():
                         
                         if target_option.is_visible():
                             target_option.click()
-                            # Beri waktu agar daftar episode yang baru dimuat
                             time.sleep(3)
                             print(f"      - Berhasil diganti ke '{target_language}'.")
                         else:
                             print(f"      - Opsi '{target_language}' tidak tersedia di dropdown.")
-                            page.keyboard.press("Escape") # Tutup dropdown jika opsi tidak ada
+                            page.keyboard.press("Escape")
 
                 except TimeoutError:
-                    # Ini akan terjadi jika dropdown Sub/Dub tidak ditemukan (misal: Donghua)
                     print("   [INFO] Dropdown Sub/Dub tidak ditemukan. Melanjutkan dengan pilihan default.")
                 except Exception as e:
                     print(f"   [PERINGATAN] Terjadi error saat mencoba mengganti sub: {e}")
