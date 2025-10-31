@@ -1,104 +1,165 @@
-from playwright.sync_api import sync_playwright
-from bs4 import BeautifulSoup
+# scraper.py
+
+from playwright.sync_api import sync_playwright, TimeoutError
 import json
 import time
 
-def scrape_kickass_anime():
+def scrape_kickass_anime(page):
     """
-    Fungsi untuk melakukan scraping data anime terbaru dari kickass-anime.ru
-    menggunakan Playwright untuk menangani konten dinamis dan mensimulasikan scrolling.
+    Tahap 1: Scrape daftar anime terbaru dari halaman utama.
+    Menerima 'page' object yang sudah ada agar tidak membuat browser baru.
     """
     url = "https://kickass-anime.ru/"
-    scraped_data = []
+    print("=== TAHAP 1: MENGAMBIL DAFTAR ANIME DARI HALAMAN UTAMA ===")
+    
+    try:
+        print(f"Mengambil data dari: {url}")
+        page.goto(url, timeout=90000, wait_until="domcontentloaded")
+        
+        print("Menunggu konten awal dimuat...")
+        page.wait_for_selector('div.latest-update div.show-item', timeout=60000)
+        print("Konten awal ditemukan. Memulai proses scrolling...")
 
-    print("Membuka browser dengan Playwright...")
+        last_height = page.evaluate("document.body.scrollHeight")
+        while True:
+            page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
+            print("   Scroll ke bawah...")
+            time.sleep(3)
+            new_height = page.evaluate("document.body.scrollHeight")
+            if new_height == last_height:
+                print("   Telah mencapai bagian bawah halaman.")
+                break
+            last_height = new_height
 
+        print("Mengambil seluruh konten HTML setelah di-scroll...")
+        html_content = page.content()
+        soup = BeautifulSoup(html_content, 'html.parser')
+
+        latest_update_container = soup.find('div', class_='latest-update')
+        anime_items = latest_update_container.find_all('div', class_='show-item')
+        
+        scraped_data = []
+        print(f"Menemukan {len(anime_items)} item anime.")
+        for item in anime_items:
+            try:
+                title_element = item.find('h2', class_='show-title').find('a')
+                title = title_element.text.strip()
+                show_url = "https://kickass-anime.ru" + title_element['href']
+                poster_div = item.find('div', class_='v-image__image--cover')
+                poster_url = poster_div['style'].split('url("')[1].split('")')[0]
+                
+                scraped_data.append({
+                    'title': title,
+                    'show_url': show_url,
+                    'poster_image_url': poster_url
+                })
+            except (AttributeError, IndexError):
+                continue
+        return scraped_data
+    except Exception as e:
+        print(f"[ERROR di Tahap 1] Gagal mengambil daftar anime: {e}")
+        return []
+
+def scrape_iframes_for_show(show_url, browser):
+    """
+    Tahap 2: Untuk satu URL anime, scrape semua iframe episodenya.
+    Menerima 'browser' object agar bisa membuat page baru yang terisolasi.
+    """
+    print(f"--- Memproses Anime dari URL: {show_url} ---")
+    page = browser.new_page()
+    episodes_data = []
+    try:
+        page.goto(show_url, timeout=90000, wait_until="domcontentloaded")
+
+        watch_now_selector = "a.pulse-button:has-text('Watch Now')"
+        page.wait_for_selector(watch_now_selector, timeout=60000)
+        page.locator(watch_now_selector).click()
+
+        episode_item_selector = "div.episode-item"
+        page.wait_for_selector(episode_item_selector, timeout=60000)
+        
+        episode_locators = page.locator(episode_item_selector)
+        episode_count = episode_locators.count()
+        print(f"   Ditemukan {episode_count} episode.")
+        
+        for i in range(episode_count):
+            all_episodes = page.locator(episode_item_selector)
+            current_episode_element = all_episodes.nth(i)
+
+            episode_number_text = current_episode_element.locator("span.v-chip__content").inner_text()
+            print(f"      - Memproses: {episode_number_text}")
+
+            is_playing = current_episode_element.locator("div.v-overlay__content:has-text('Playing')").is_visible()
+            
+            if not is_playing:
+                current_episode_element.click()
+                page.wait_for_function("document.querySelector('div.player-container iframe') !== null", timeout=60000)
+            
+            episode_url = page.url
+            iframe_src = "Not Found"
+            try:
+                iframe_selector = "div.player-container iframe.player"
+                iframe_element = page.locator(iframe_selector)
+                iframe_element.wait_for(state="visible", timeout=30000)
+                iframe_src = iframe_element.get_attribute('src')
+            except TimeoutError:
+                print(f"      [PERINGATAN] Iframe tidak ditemukan untuk {episode_number_text}.")
+
+            episodes_data.append({
+                "episode_number": episode_number_text,
+                "episode_url": episode_url,
+                "iframe_url": iframe_src
+            })
+        return episodes_data
+    except Exception as e:
+        print(f"   [ERROR] Gagal memproses anime ini. Melewati. Detail: {e}")
+        return []
+    finally:
+        page.close() # Penting: tutup page setelah selesai untuk hemat memori
+
+def main():
+    """
+    Fungsi utama untuk mengorkestrasi seluruh proses scraping.
+    """
     with sync_playwright() as p:
-        try:
-            browser = p.chromium.launch(headless=True)
-            page = browser.new_page()
+        browser = p.chromium.launch(headless=True)
+        # Buat satu page untuk Tahap 1
+        main_page = browser.new_page()
 
-            print(f"Mengambil data dari: {url}")
-            # Pergi ke URL, tunggu hingga struktur dasar halaman (DOM) siap
-            page.goto(url, timeout=90000, wait_until="domcontentloaded")
+        # Jalankan Tahap 1
+        latest_shows = scrape_kickass_anime(main_page)
+        main_page.close() # Tutup page setelah tidak dibutuhkan
 
-            # Tunggu hingga setidaknya beberapa item anime pertama muncul
-            print("Menunggu konten awal dimuat...")
-            page.wait_for_selector('div.latest-update div.show-item', timeout=60000)
-            print("Konten awal ditemukan. Mulai proses scrolling...")
-
-            # === LOGIKA SCROLLING BARU DIMULAI DI SINI ===
-            last_height = page.evaluate("document.body.scrollHeight")
-            
-            while True:
-                # Gulir ke bagian paling bawah halaman
-                page.evaluate("window.scrollTo(0, document.body.scrollHeight)")
-                print("Scroll ke bawah...")
-                
-                # Beri waktu agar konten baru dimuat oleh JavaScript
-                time.sleep(3) # Anda mungkin perlu menyesuaikan waktu ini (misal: 5 detik jika koneksi lambat)
-
-                # Hitung tinggi halaman yang baru setelah konten dimuat
-                new_height = page.evaluate("document.body.scrollHeight")
-                
-                # Jika tinggi halaman tidak bertambah, berarti kita sudah sampai di paling bawah
-                if new_height == last_height:
-                    print("Telah mencapai bagian bawah halaman.")
-                    break
-                
-                last_height = new_height
-            # === LOGIKA SCROLLING SELESAI ===
-
-            print("Mengambil seluruh konten HTML setelah di-scroll...")
-            html_content = page.content()
+        if not latest_shows:
+            print("Tidak ada anime yang ditemukan di halaman utama. Proses berhenti.")
             browser.close()
+            return
 
-            # Parsing konten HTML dengan BeautifulSoup
-            soup = BeautifulSoup(html_content, 'html.parser')
-            latest_update_container = soup.find('div', class_='latest-update')
-            anime_items = latest_update_container.find_all('div', class_='show-item')
-            
-            print(f"Menemukan {len(anime_items)} item anime setelah scrolling.")
+        # Jalankan Tahap 2 untuk setiap anime
+        print("\n=== TAHAP 2: MENGAMBIL DETAIL EPISODE UNTUK SETIAP ANIME ===")
+        for show in latest_shows:
+            show_url = show.get('show_url')
+            if show_url:
+                episodes = scrape_iframes_for_show(show_url, browser)
+                show['episodes'] = episodes
+            else:
+                show['episodes'] = []
 
-            for item in anime_items:
-                try:
-                    title_element = item.find('h2', class_='show-title').find('a')
-                    title = title_element.text.strip()
-                    show_url = "https://kickass-anime.ru" + title_element['href']
-
-                    episode_element = item.find('a', class_='v-card')
-                    episode_url = "https://kickass-anime.ru" + episode_element['href']
-
-                    poster_div = item.find('div', class_='v-image__image--cover')
-                    poster_url = poster_div['style'].split('url("')[1].split('")')[0]
-
-                    tags = [tag.text.strip() for tag in item.find_all('span', class_='v-chip__content')]
-
-                    anime_data = {
-                        'title': title,
-                        'show_url': show_url,
-                        'latest_episode_url': episode_url,
-                        'poster_image_url': poster_url,
-                        'tags': tags
-                    }
-                    scraped_data.append(anime_data)
-                except (AttributeError, IndexError) as e:
-                    print(f"Error parsing item: {e}. Melewati item ini.")
-                    continue
-
-        except Exception as e:
-            print(f"Terjadi error saat menjalankan Playwright: {e}")
-            if 'browser' in locals() and browser.is_connected():
-                browser.close()
-            return []
-            
-    return scraped_data
+        browser.close()
+        print("\n=== PROSES SCRAPING SELESAI ===")
+        
+        output_filename = "latest_anime_with_episodes.json"
+        with open(output_filename, 'w', encoding='utf-8') as f:
+            json.dump(latest_shows, f, ensure_ascii=False, indent=4)
+        
+        print(f"Data lengkap telah disimpan di '{output_filename}'")
 
 if __name__ == "__main__":
-    data = scrape_kickass_anime()
-    if data:
-        with open('latest_anime.json', 'w', encoding='utf-8') as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        print(f"\nScraping berhasil! Total {len(data)} data disimpan di file 'latest_anime.json'")
-    else:
-        print("\nScraping gagal atau tidak ada data yang ditemukan. File JSON tidak dibuat.")
+    # Import BeautifulSoup di sini agar tidak error jika file dijalankan tanpa bs4 terinstall
+    try:
+        from bs4 import BeautifulSoup
+    except ImportError:
+        print("Error: Library 'BeautifulSoup4' tidak ditemukan. Silakan install dengan 'pip install beautifulsoup4'")
+        exit()
+        
+    main()
