@@ -1,4 +1,4 @@
-# scraper.py (Final Version with Dropdown Pagination Logic)
+# scraper.py (Final Version with Correct Batching/Cicilan Logic)
 
 import json
 import time
@@ -7,7 +7,9 @@ from playwright.sync_api import sync_playwright, TimeoutError
 from bs4 import BeautifulSoup
 
 DATABASE_FILE = "anime_database.json"
-EPISODE_BATCH_LIMIT = 20 # Batas cicilan episode untuk anime besar
+PAGINATION_THRESHOLD = 50 
+# --- INI YANG HILANG DAN SEKARANG DITAMBAHKAN KEMBALI ---
+EPISODE_BATCH_LIMIT = 10 # Batas cicilan episode untuk anime besar
 
 def load_database():
     if os.path.exists(DATABASE_FILE):
@@ -16,7 +18,7 @@ def load_database():
                 print(f"Database '{DATABASE_FILE}' ditemukan dan dimuat.")
                 return {show['show_url']: show for show in json.load(f)}
         except json.JSONDecodeError:
-            print(f"[PERINGATAN] Database '{DATABASE_FILE}' rusak. Memulai dari awal.")
+            print(f"[PERINGATAN] File database '{DATABASE_FILE}' rusak. Memulai dari awal.")
             return {}
     print(f"Database '{DATABASE_FILE}' tidak ditemukan. Akan membuat yang baru.")
     return {}
@@ -94,14 +96,22 @@ def main():
         for show_summary in latest_shows_list:
             show_url = show_summary['show_url']
             
-            if show_url not in db_shows:
+            is_new_show = show_url not in db_shows
+            if is_new_show:
                 print(f"\nMemproses anime baru: '{show_summary['title']}'")
                 page = browser.new_page()
-                details = scrape_show_details(page, show_url)
-                db_shows[show_url] = {**show_summary, **details, "episodes": []}
-                page.close()
+                try:
+                    details = scrape_show_details(page, show_url)
+                    db_shows[show_url] = {**show_summary, **details, "episodes": []}
+                except Exception as e:
+                    print(f"   [ERROR] Gagal mengambil detail untuk anime baru, melewati: {e}")
+                    page.close()
+                    continue
+                finally:
+                    page.close()
+            else:
+                print(f"\nMengecek episode untuk: '{show_summary['title']}'")
 
-            print(f"\nMengecek episode untuk: '{show_summary['title']}'")
             page = browser.new_page()
             try:
                 page.goto(show_url, timeout=90000)
@@ -110,22 +120,35 @@ def main():
 
                 existing_ep_numbers = {ep['episode_number'] for ep in db_shows[show_url].get('episodes', [])}
                 episodes_to_process = []
+                
+                initial_ep_count = page.locator("div.episode-item").count()
+                
+                page_options_texts = []
+                if initial_ep_count >= PAGINATION_THRESHOLD:
+                    print(f"   Jumlah episode ({initial_ep_count}) >= {PAGINATION_THRESHOLD}. Mengecek paginasi...")
+                    page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
+                    if page_dropdown.is_visible():
+                        page_dropdown.click(timeout=10000)
+                        page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
+                        page_options_texts = [opt.inner_text() for opt in page.locator(".v-menu__content .v-list-item__title").all()]
+                        page.keyboard.press("Escape")
+                        print(f"   Ditemukan halaman paginasi: {page_options_texts}")
+                    else:
+                        page_options_texts = ["default"]
+                else:
+                    print(f"   Jumlah episode ({initial_ep_count}) < {PAGINATION_THRESHOLD}. Mengasumsikan hanya satu halaman.")
+                    page_options_texts = ["default"]
 
-                # --- LOGIKA PAGINASI DROPDOWN BARU ---
-                page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
-                page_dropdown.click()
-                time.sleep(1) # Tunggu menu muncul
-                page_options = [opt.inner_text() for opt in page.locator(".v-menu__content .v-list-item__title").all()]
-                page.keyboard.press("Escape") # Tutup menu
-                print(f"   Ditemukan halaman paginasi: {page_options}")
-
-                for page_range in page_options:
-                    print(f"   Mengecek halaman: {page_range}")
-                    page_dropdown.click()
-                    time.sleep(0.5)
-                    page.locator(f".v-menu__content .v-list-item__title:has-text('{page_range}')").click()
-                    page.wait_for_load_state('domcontentloaded')
-                    time.sleep(1.5) # Beri waktu render
+                for page_range in page_options_texts:
+                    if page_range != "default":
+                        current_page_text = page.locator("div.v-card__title .v-select").filter(has_text="Page").locator(".v-select__selection").inner_text()
+                        if current_page_text != page_range:
+                            print(f"   Pindah ke halaman: {page_range}")
+                            page.locator("div.v-card__title .v-select").filter(has_text="Page").click(force=True, timeout=10000)
+                            page.wait_for_selector(".v-menu__content .v-list-item__title", state="visible")
+                            page.locator(f".v-menu__content .v-list-item__title:has-text('{page_range}')").click()
+                            page.wait_for_selector(".v-menu__content", state="hidden")
+                            time.sleep(1.5)
 
                     episodes_on_page = page.locator("div.episode-item").all()
                     for ep_element in episodes_on_page:
@@ -137,26 +160,23 @@ def main():
                     print("   Tidak ada episode baru untuk di-scrape.")
                     continue
 
-                print(f"   Ditemukan {len(episodes_to_process)} episode baru.")
-                if len(episodes_to_process) > 20:
-                    print(f"   Jumlah episode baru > 20. Akan memproses {EPISODE_BATCH_LIMIT} episode saja (cicilan).")
-                    episodes_to_process = episodes_to_process[:EPISODE_BATCH_LIMIT]
+                print(f"   Ditemukan {len(episodes_to_process)} episode baru untuk diproses.")
+                
+                # --- LOGIKA CICILAN YANG DIPERBAIKI DAN DITERAPKAN ---
+                if len(episodes_to_process) > EPISODE_BATCH_LIMIT:
+                     print(f"   Jumlah episode baru ({len(episodes_to_process)}) > {EPISODE_BATCH_LIMIT}. Akan memproses {EPISODE_BATCH_LIMIT} episode saja (cicilan).")
+                     episodes_to_process = episodes_to_process[:EPISODE_BATCH_LIMIT]
 
                 for i, ep_num in enumerate(episodes_to_process):
                     print(f"      - Memproses iframe: {ep_num} ({i+1}/{len(episodes_to_process)})")
                     try:
-                        # Pindah ke halaman paginasi yang benar
-                        target_page_range = next((pr for pr in page_options if int(pr.split('-')[0]) <= int(''.join(filter(str.isdigit, ep_num))) <= int(pr.split('-')[1])), None)
-                        current_page_text = page_dropdown.locator(".v-select__selection").inner_text()
-                        if target_page_range and target_page_range != current_page_text:
-                            page_dropdown.click(); time.sleep(0.5)
-                            page.locator(f".v-menu__content .v-list-item__title:has-text('{target_page_range}')").click()
-                            page.wait_for_load_state('domcontentloaded'); time.sleep(1.5)
-
                         ep_element = page.locator(f"div.episode-item:has-text('{ep_num}')").first
+                        if not ep_element.is_visible():
+                            ep_element.scroll_into_view_if_needed(timeout=10000)
+                        
                         ep_element.click()
                         page.wait_for_selector("div.player-container iframe", state='attached', timeout=60000)
-
+                        
                         iframe_element = page.locator("div.player-container iframe.player")
                         iframe_element.wait_for(state="visible", timeout=30000)
                         iframe_src = iframe_element.get_attribute('src')
@@ -170,7 +190,7 @@ def main():
                 db_shows[show_url]['episodes'].sort(key=lambda x: int(''.join(filter(str.isdigit, x['episode_number'].split()[-1])) or 0))
 
             except Exception as e:
-                print(f"   [ERROR FATAL] Gagal memproses '{show_summary['title']}'. Melewati. Detail: {e}")
+                print(f"   [ERROR FATAL] Gagal memproses episode untuk '{show_summary['title']}'. Melewati. Detail: {e}")
             finally:
                 page.close()
 
