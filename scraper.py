@@ -6,7 +6,6 @@ import json
 import time
 import os
 
-# --- KONFIGURASI ---
 DATABASE_FILE = "anime_database.json"
 
 def load_database():
@@ -17,23 +16,25 @@ def load_database():
                 print(f"Database '{DATABASE_FILE}' ditemukan dan dimuat.")
                 return json.load(f)
         except json.JSONDecodeError:
-            print(f"[PERINGATAN] File database '{DATABASE_FILE}' rusak atau kosong. Memulai dari awal.")
+            print(f"[PERINGATAN] File database '{DATABASE_FILE}' rusak. Memulai dari awal.")
             return []
     print(f"Database '{DATABASE_FILE}' tidak ditemukan. Akan membuat yang baru.")
     return []
 
 def save_database(data):
     """Menyimpan data anime ke file JSON."""
+    # Urutkan anime berdasarkan judul sebelum menyimpan
+    sorted_data = sorted(data, key=lambda x: x['title'])
     with open(DATABASE_FILE, 'w', encoding='utf-8') as f:
-        json.dump(data, f, ensure_ascii=False, indent=4)
-    print(f"Database berhasil disimpan ke '{DATABASE_FILE}'.")
+        json.dump(sorted_data, f, ensure_ascii=False, indent=4)
+    print(f"\nDatabase berhasil disimpan ke '{DATABASE_FILE}'.")
 
 def scrape_main_page_shows(page):
     """Tahap 1: Scrape daftar anime terbaru dari halaman utama."""
     url = "https://kickass-anime.ru/"
     print("\n=== TAHAP 1: MENGAMBIL DAFTAR ANIME DARI HALAMAN UTAMA ===")
     try:
-        page.goto(url, timeout=120000)
+        page.goto(url, timeout=120000, wait_until="domcontentloaded")
         page.wait_for_selector('div.latest-update div.show-item', timeout=60000)
         
         last_height = page.evaluate("document.body.scrollHeight")
@@ -80,7 +81,7 @@ def scrape_show_details(page, show_url):
         genres = [genre.inner_text() for genre in page.locator(".anime-info-card .v-card__text span.v-chip__content").all()]
         
         info_elements = page.locator(".anime-info-card .d-flex.mt-2.mb-3 div.text-subtitle-2").all()
-        show_type = info_elements[0].inner_text() if len(info_elements) > 0 else "N/A"
+        show_type = info_elements[0].inner_text() if info_elements else "N/A"
         year = info_elements[2].inner_text() if len(info_elements) > 2 else "N/A"
         
         print("     Metadata berhasil diambil.")
@@ -95,16 +96,17 @@ def scrape_show_details(page, show_url):
         print(f"     [PERINGATAN] Gagal mengambil metadata detail: {e}")
         return {}
 
-def scrape_all_episode_elements(page):
-    """(FIXED) Mengambil semua elemen episode dari semua halaman paginasi."""
+def get_all_episode_numbers(page):
+    """(ROBUST) Mengambil semua nomor episode dari semua halaman paginasi."""
     episode_item_selector = "div.episode-item"
     page.wait_for_selector(episode_item_selector, timeout=60000)
     
-    all_episode_numbers = []
+    all_episode_numbers = set()
 
     while True:
-        current_ep_numbers = [el.locator("span.v-chip__content").inner_text() for el in page.locator(episode_item_selector).all()]
-        all_episode_numbers.extend(current_ep_numbers)
+        current_ep_elements = page.locator(episode_item_selector).all()
+        for el in current_ep_elements:
+            all_episode_numbers.add(el.locator("span.v-chip__content").inner_text())
         
         page_dropdown = page.locator("div.v-card__title .v-select").filter(has_text="Page")
         if not page_dropdown.is_visible():
@@ -113,7 +115,7 @@ def scrape_all_episode_elements(page):
         page_dropdown.click()
         time.sleep(0.5)
         
-        page_options = page.locator(".v-list-item__title").all()
+        page_options = page.locator(".v-menu__content .v-list-item__title").all()
         current_page_text = page_dropdown.locator(".v-select__selection").inner_text()
         
         current_index = -1
@@ -123,17 +125,19 @@ def scrape_all_episode_elements(page):
                 break
         
         if current_index != -1 and current_index + 1 < len(page_options):
-            print(f"      - Menavigasi ke halaman episode berikutnya...")
+            print(f"      - Pindah ke halaman episode berikutnya...")
             page_options[current_index + 1].click()
-            page.wait_for_load_state('domcontentloaded', timeout=30000)
-            time.sleep(1) 
+            # Tunggu hingga dropdown tertutup dan konten baru mungkin mulai dimuat
+            page.wait_for_selector(".v-menu__content", state="hidden")
+            time.sleep(2) # Beri waktu untuk JS merender ulang
         else:
+            page.keyboard.press("Escape") # Tutup dropdown jika tidak ada halaman lagi
             break
 
-    # Hilangkan duplikat dan urutkan
-    unique_ep_numbers = sorted(list(set(all_episode_numbers)), key=lambda x: int(x.split()[-1]))
-    print(f"   Ditemukan total {len(unique_ep_numbers)} episode unik.")
-    return unique_ep_numbers
+    # Urutkan berdasarkan angka
+    sorted_ep_numbers = sorted(list(all_episode_numbers), key=lambda x: int(''.join(filter(str.isdigit, x.split()[-1]))))
+    print(f"   Ditemukan total {len(sorted_ep_numbers)} episode unik.")
+    return sorted_ep_numbers
 
 def main():
     db_data = load_database()
@@ -154,7 +158,6 @@ def main():
         for show_summary in latest_shows_list:
             show_url = show_summary['show_url']
             
-            # --- Logika Incremental Scraping ---
             is_new_show = show_url not in db_shows
             if not is_new_show:
                 print(f"\nAnime '{show_summary['title']}' sudah ada. Mengecek pembaruan...")
@@ -163,19 +166,15 @@ def main():
             
             page = browser.new_page()
             try:
-                # 1. Ambil Metadata jika anime baru
                 if is_new_show:
                     details = scrape_show_details(page, show_url)
                     db_shows[show_url] = {**show_summary, **details, "episodes": []}
                 
-                # 2. Navigasi ke halaman episode
                 page.goto(show_url, timeout=90000)
                 page.locator("a.pulse-button:has-text('Watch Now')").click()
                 
-                # 3. Dapatkan daftar LENGKAP semua nomor episode
-                all_ep_numbers_on_site = scrape_all_episode_elements(page)
+                all_ep_numbers_on_site = get_all_episode_numbers(page)
                 
-                # 4. Tentukan episode mana yang perlu di-scrape
                 existing_ep_numbers = {ep['episode_number'] for ep in db_shows[show_url]['episodes']}
                 episodes_to_scrape = [num for num in all_ep_numbers_on_site if num not in existing_ep_numbers]
                 
@@ -183,32 +182,38 @@ def main():
                     print("   Tidak ada episode baru untuk di-scrape.")
                     continue
                 
-                print(f"   Ditemukan {len(episodes_to_scrape)} episode baru untuk di-scrape.")
+                print(f"   Ditemukan {len(episodes_to_scrape)} episode baru: {', '.join(episodes_to_scrape[:5])}{'...' if len(episodes_to_scrape) > 5 else ''}")
 
-                # 5. "Cicil" dan scrape iframe untuk episode yang dibutuhkan
-                for i, ep_num_to_find in enumerate(episodes_to_scrape):
-                    print(f"      - Memproses iframe untuk: {ep_num_to_find} ({i+1}/{len(episodes_to_scrape)})")
-                    
+                # Batas "cicilan" per eksekusi untuk anime dengan banyak episode baru
+                EPISODE_BATCH_LIMIT = 10
+                if len(episodes_to_scrape) > 20:
+                    print(f"   Jumlah episode baru > 20. Akan memproses {EPISODE_BATCH_LIMIT} episode saja kali ini.")
+                    episodes_to_scrape = episodes_to_scrape[:EPISODE_BATCH_LIMIT]
+                
+                for i, ep_num in enumerate(episodes_to_scrape):
+                    print(f"      - Memproses iframe: {ep_num} ({i+1}/{len(episodes_to_scrape)})")
                     try:
-                        # Cari elemen episode berdasarkan teksnya
-                        ep_element = page.locator(f"div.episode-item:has-text('{ep_num_to_find}')").first
+                        ep_element = page.locator(f"div.episode-item:has-text('{ep_num}')").first
+                        if not ep_element.is_visible():
+                            print("         Elemen tidak terlihat, scroll dulu...")
+                            ep_element.scroll_into_view_if_needed()
+                        
                         ep_element.click()
-                        page.wait_for_function("document.querySelector('div.player-container iframe') !== null", timeout=60000)
+                        page.wait_for_selector("div.player-container iframe", state='attached', timeout=60000)
 
                         iframe_element = page.locator("div.player-container iframe.player")
                         iframe_element.wait_for(state="visible", timeout=30000)
                         iframe_src = iframe_element.get_attribute('src')
                         
                         db_shows[show_url]['episodes'].append({
-                            "episode_number": ep_num_to_find,
+                            "episode_number": ep_num,
                             "episode_url": page.url,
                             "iframe_url": iframe_src
                         })
                     except Exception as e:
-                        print(f"        [PERINGATAN] Gagal memproses iframe untuk {ep_num_to_find}: {e}")
+                        print(f"        [PERINGATAN] Gagal memproses iframe untuk {ep_num}: {e}")
                 
-                # Urutkan kembali daftar episode
-                db_shows[show_url]['episodes'].sort(key=lambda x: int(x['episode_number'].split()[-1]))
+                db_shows[show_url]['episodes'].sort(key=lambda x: int(''.join(filter(str.isdigit, x['episode_number'].split()[-1]))))
 
             except Exception as e:
                 print(f"   [ERROR FATAL] Gagal memproses '{show_summary['title']}'. Melewati. Detail: {e}")
@@ -218,7 +223,6 @@ def main():
         browser.close()
         
         save_database(list(db_shows.values()))
-        print("\n=== PROSES SCRAPING SELESAI ===")
 
 if __name__ == "__main__":
     try:
@@ -226,5 +230,3 @@ if __name__ == "__main__":
     except ImportError:
         print("Error: Library 'beautifulsoup4' tidak ada. Install dengan 'pip install beautifulsoup4'")
         exit()
-        
-    main()
